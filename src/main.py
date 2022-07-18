@@ -1,10 +1,11 @@
 import asyncio
 import random
 import csv
+import faker
 from typing import Any, Iterable, NamedTuple, Coroutine
 
 from config import logger
-from detmir import Parser
+from detmir import DetmirAPI
 
 
 class Product(NamedTuple):
@@ -33,7 +34,7 @@ def dump_to_csv(filename: str, products: Iterable[Product]) -> None:
             writer.writerow(product)
 
 
-def extract_products(results: dict[str, Any]) -> list[Product]:
+def parse_product_data(results: list[list[dict[str, Any]]]) -> list[Product]:
     """
     Extract product data from fetched results
     """
@@ -41,9 +42,7 @@ def extract_products(results: dict[str, Any]) -> list[Product]:
     products: list[Product] = []
 
     for result in results:
-        items = result["items"]
-
-        for item in items:
+        for item in result:
             price = item["price"]
             promo_price = item["old_price"]
 
@@ -69,14 +68,17 @@ def extract_products(results: dict[str, Any]) -> list[Product]:
     return products
 
 
-async def main() -> None:
+async def main():
     # specifying category slug/alias (it is present in the url)
-    category_alias = "nutrition_feeding"
-    # category_alias = "block"
+    category_alias = "nutrition_feeding" # 24_316 products
+    # category_alias = "block" # 3_099 products
 
     # list of city codes (Moscow and St. Petersburg)
     # city code can be viewed via network tab when products loaded
-    region_codes: list[str] = ["RU-MOW", "RU-SEP"]
+    region_codes: list[str] = [
+        "RU-MOW",
+        "RU-SEP",
+    ]
 
     # purchased 10 proxies for 300 rubles
     # there should be a .env file
@@ -93,41 +95,51 @@ async def main() -> None:
         "http://2Fk6Uc:bg9bDa@194.28.210.63:9838",
     ]
 
+    fake = faker.Faker()
 
-    async with Parser(limit=asyncio.Semaphore(10), rate=5.0) as p:
+    async with DetmirAPI(limit=asyncio.Semaphore(10), rate=5.0) as api:
         for region_code in region_codes:
+            fltr = f"categories[].alias:{category_alias};withregion:{region_code}"
+
             # making first API hit in order
             # to get total count of products in the category
-            data: dict[str, Any] = await p.fetch_products(params={
-                "category_alias": category_alias,
-                "region": region_code,
-                "limit": Parser.PRODUCTS_FETCH_LIMIT,
-                "offset": 0,
-            }, proxy=random.choice(proxies))
+            data: dict[str, Any] = await api.fetch_products(params={
+                "filter": fltr,
+                "meta": "*",
+            })
 
             total_products: int = data["meta"]["length"]
-
-            offset = 0
-            tasks: list[Coroutine] = []
-
             logger.info(f"Total products: {total_products}")
 
-            # fetching by 100 products in the loop
+
+            tasks: list[Coroutine] = []
+            offset = 0
+
+            # fetching by 100 products
             while offset < total_products:
-                tasks.append(
-                    p.fetch_products(params={
-                        "category_alias": category_alias,
-                        "region": region_code,
-                        "limit": Parser.PRODUCTS_FETCH_LIMIT,
-                        "offset": offset,
-                    }, proxy=random.choice(proxies))
+                task = asyncio.create_task(
+                    api.fetch_products(
+                        proxy=random.choice(proxies),
+                        params={
+                            "filter": fltr,
+                            "limit": DetmirAPI.PRODUCTS_FETCH_LIMIT,
+                            "offset": offset,
+                        },
+                        headers={
+                            "Connection": "keep-alive",
+                            # "User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:102.0) Gecko/20100101 Firefox/102.0",
+                            "User-Agent": fake.user_agent(),
+                        },
+                    )
                 )
 
-                offset += Parser.PRODUCTS_FETCH_LIMIT
+                tasks.append(task)
 
-            results: list[dict[str, Any]] = await asyncio.gather(*tasks)
+                offset += DetmirAPI.PRODUCTS_FETCH_LIMIT
 
-            products: list[Product] = extract_products(results)
+            results: list[list[dict[str, Any]]] = await asyncio.gather(*tasks)
+
+            products: list[Product] = parse_product_data(results)
 
             dump_to_csv(f"{region_code}__{category_alias}", products)
 

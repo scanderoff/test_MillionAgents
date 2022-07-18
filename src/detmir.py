@@ -1,19 +1,19 @@
 import aiohttp
 import asyncio
-# import faker
 from typing import Any
 
 from config import logger
 
 
-class Parser:
+class DetmirAPI:
     """
     Async context manager is supported
 
     We can only get 100 products per request
     """
 
-    PRODUCTS_API_URL = "https://api.detmir.ru/v2/products"
+    BASE_ENDPOINT = "https://api.detmir.ru/v2"
+    PRODUCTS_ENDPOINT = f"{BASE_ENDPOINT}/products"
     PRODUCTS_FETCH_LIMIT = 100
 
     def __init__(self, limit: asyncio.Semaphore, rate: float = 0.0) -> None:
@@ -43,22 +43,16 @@ class Parser:
         self.i = 0
         await self.session.close()
 
-    async def fetch_products(self, params: dict[str, Any], proxy: str) -> dict[str, Any]:
+    async def fetch_products(self, **kwargs: Any) -> dict[str, Any]:
         """
         Fetching products via API
         """
 
-        cat_alias: str = params["category_alias"]
-        region: str = params["region"]
-
-        async with self.limit, self.session.get(self.PRODUCTS_API_URL, params={
-            "filter": f"categories[].alias:{cat_alias};promo:false;withregion:{region}",
-            "meta": "*",
-            "limit": params["limit"],
-            "offset": params["offset"],
-            "sort": "popularity:desc",
-        }, proxy=proxy) as response:
-            logger.info(f"FETCH: {self.i}")
+        async with self.limit, self.session.get(
+            self.PRODUCTS_ENDPOINT,
+            **kwargs,
+        ) as response:
+            logger.info(f"FETCHING: {self.i}")
 
             self.i += self.PRODUCTS_FETCH_LIMIT
 
